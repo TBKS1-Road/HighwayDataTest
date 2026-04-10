@@ -1,7 +1,6 @@
 import os
 import re
 import argparse
-import folium
 from shapely.geometry import LineString
 
 # ----------------------------
@@ -196,6 +195,25 @@ def plot_result(path, highways):
     plt.title("Intersect-All Path")
     plt.show()
 
+def plot_folium(path, highways, output_html="map.html"):
+    import folium
+
+    first_lon, first_lat = path.coords[0]
+
+    m = folium.Map(location=[first_lat, first_lon], zoom_start=7)
+
+    # highways (blue)
+    for geom in highways.values():
+        coords = [(lat, lon) for lon, lat in geom.coords]
+        folium.PolyLine(coords, color="blue", weight=1).add_to(m)
+
+    # path (red)
+    path_coords = [(lat, lon) for lon, lat in path.coords]
+    folium.PolyLine(path_coords, color="red", weight=4).add_to(m)
+
+    m.save(output_html)
+    print(f"Saved map to {output_html}")
+
 
 # ----------------------------
 # ENTRY
@@ -204,7 +222,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("folder")
     parser.add_argument("--passes", type=int, default=12)
-    parser.add_argument("--plot", action="store_true")
+    parser.add_argument("--map", action="store_true")
     parser.add_argument("--output", default="path.txt")
 
     args = parser.parse_args()
@@ -217,20 +235,7 @@ if __name__ == "__main__":
     if args.plot:
         plot_result(path, highways)
 
-def plot_folium(path, highways, output_html="map.html"):
-    # center map on first point
-    first_x, first_y = next(iter(path.coords))[0], next(iter(path.coords))[1]
+    if args.map:
+        plot_result(path, highways)
 
-    m = folium.Map(location=[first_y, first_x], zoom_start=7)
 
-    # plot highways (thin blue lines)
-    for geom in highways.values():
-        coords = [(lat, lon) for lon, lat in geom.coords]
-        folium.PolyLine(coords, color="blue", weight=1).add_to(m)
-
-    # plot your path (red thick line)
-    path_coords = [(lat, lon) for lon, lat in path.coords]
-    folium.PolyLine(path_coords, color="red", weight=4).add_to(m)
-
-    m.save(output_html)
-    print(f"Saved map to {output_html}")
