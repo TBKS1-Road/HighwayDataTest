@@ -4,6 +4,7 @@ import math
 import argparse
 import networkx as nx
 from collections import defaultdict
+import folium   # ✅ NEW
 
 
 # ----------------------------
@@ -52,7 +53,6 @@ def load_highways(folder):
 # ----------------------------
 def build_graph(roads):
     G = nx.Graph()
-
     last = {}
 
     for name, coord in roads:
@@ -61,7 +61,6 @@ def build_graph(roads):
             b = coord
 
             dist = math.hypot(a[0] - b[0], a[1] - b[1])
-
             G.add_edge(a, b, weight=dist, highway=name)
 
         last[name] = coord
@@ -87,16 +86,14 @@ def build_targets(G):
 
     for hwy, nodes in raw.items():
         nodes = list(set(nodes))
-
-        # keep only a few representative nodes
-        targets[hwy] = nodes[:3]
+        targets[hwy] = nodes[:3]  # keep a few representatives
 
     print(f"Highway groups: {len(targets)}")
     return targets
 
 
 # ----------------------------
-# COMPONENT-AWARE CONNECTIVITY MAP
+# COMPONENT MAP
 # ----------------------------
 def build_components(G):
     comps = list(nx.connected_components(G))
@@ -111,7 +108,7 @@ def build_components(G):
 
 
 # ----------------------------
-# SAFE DISTANCE (COMPONENT AWARE)
+# SAFE DISTANCE
 # ----------------------------
 def safe_distance(G, node_to_comp, a, b):
     if node_to_comp.get(a) != node_to_comp.get(b):
@@ -124,7 +121,7 @@ def safe_distance(G, node_to_comp, a, b):
 
 
 # ----------------------------
-# SIMPLE GREEDY ORDER (FAST + RELIABLE)
+# ORDER
 # ----------------------------
 def compute_order(G, targets, node_to_comp):
     highways = list(targets.keys())
@@ -157,7 +154,7 @@ def compute_order(G, targets, node_to_comp):
 
 
 # ----------------------------
-# ROUTE BUILDER (SAFE)
+# ROUTE BUILDER
 # ----------------------------
 def build_route(G, order, targets):
     route = []
@@ -203,27 +200,49 @@ def build_route(G, order, targets):
 
 
 # ----------------------------
-# SAVE
+# SAVE TXT
 # ----------------------------
 def save(route, filename):
     if not route:
         print("❌ No route generated")
         return
 
-    filename = str(filename).strip().replace("\n", "").replace("\r", "")
-
     if not filename.endswith(".txt"):
         filename += ".txt"
 
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            for x, y in route:
-                f.write(f"{y} {x}\n")
+    with open(filename, "w", encoding="utf-8") as f:
+        for x, y in route:
+            f.write(f"{y} {x}\n")
 
-        print(f"Saved: {filename}")
+    print(f"Saved: {filename}")
 
-    except Exception as e:
-        print(f"❌ Failed to save file: {e}")
+
+# ----------------------------
+# ✅ NEW: PLOT WITH FOLIUM
+# ----------------------------
+def plot_route(route, output_html="route_map.html"):
+    if not route:
+        print("No route to plot")
+        return
+
+    # center map
+    start_lat, start_lon = route[0][1], route[0][0]
+    m = folium.Map(location=[start_lat, start_lon], zoom_start=6)
+
+    # convert (lon, lat) -> (lat, lon)
+    latlon = [(lat, lon) for lon, lat in route]
+
+    # draw line
+    folium.PolyLine(latlon, color="blue", weight=3).add_to(m)
+
+    # start marker
+    folium.Marker(latlon[0], popup="Start", icon=folium.Icon(color="green")).add_to(m)
+
+    # end marker
+    folium.Marker(latlon[-1], popup="End", icon=folium.Icon(color="red")).add_to(m)
+
+    m.save(output_html)
+    print(f"Map saved to {output_html}")
 
 
 # ----------------------------
@@ -231,11 +250,8 @@ def save(route, filename):
 # ----------------------------
 def solve(folder):
     roads = load_highways(folder)
-
     G = build_graph(roads)
-
     targets = build_targets(G)
-
     node_to_comp = build_components(G)
 
     print("Computing order...")
@@ -261,4 +277,5 @@ if __name__ == "__main__":
 
     save(route, args.output)
 
-    print(f"Saved {args.output}")
+    # ✅ Automatically create map
+    plot_route(route, "route_map.html")
