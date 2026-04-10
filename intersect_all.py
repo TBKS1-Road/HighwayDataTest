@@ -329,7 +329,7 @@ def save_tm_list(segments, filename="route.list", region="AR"):
             if start == end:
                 continue
             pretty = format_tm_route_name(hwy)
-                f.write(f"{region} {pretty} {start} {end}\n")
+            f.write(f"{region} {pretty} {start} {end}\n")
 
     print(f"TM .list saved: {filename}")
 
