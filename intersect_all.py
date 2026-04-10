@@ -169,7 +169,7 @@ def solve(folder, passes=12, max_iter=50):
             key=lambda n: highways[n].distance(path)
         )
         
-            path = add_detour(path, highways[name])
+        path = add_detour(path, highways[name])
 
     return path, highways
 
