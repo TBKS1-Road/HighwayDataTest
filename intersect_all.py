@@ -266,7 +266,54 @@ def build_tm_segments(route, G):
 
     return segments
 
+def format_tm_route_name(raw_name):
+    """
+    Convert filename-style highway names to TM visual names
+    Examples:
+    la.us190 -> US190
+    la.la1249 -> LA1249
+    la.i12 -> I-12
+    la.us051busham -> US51BusHam
+    """
 
+    # remove region prefix
+    name = raw_name.split(".")[-1].lower()
+
+    # interstate
+    if name.startswith("i"):
+        num = name[1:]
+        return f"I-{int(num)}"
+
+    # US routes
+    if name.startswith("us"):
+        base = name[2:]
+        num = ""
+        suffix = ""
+
+        for c in base:
+            if c.isdigit():
+                num += c
+            else:
+                suffix += c
+
+        return f"US{int(num)}{suffix.title()}"
+
+    # state routes (LA, AR, etc.)
+    if name.startswith("la"):
+        base = name[2:]
+        num = ""
+        suffix = ""
+
+        for c in base:
+            if c.isdigit():
+                num += c
+            else:
+                suffix += c
+
+        return f"LA{int(num)}{suffix.title()}"
+
+    # fallback
+    return raw_name.upper()
 # ----------------------------
 # SAVE TM LIST
 # ----------------------------
@@ -281,7 +328,8 @@ def save_tm_list(segments, filename="route.list", region="AR"):
         for hwy, start, end in segments:
             if start == end:
                 continue
-            f.write(f"{region} {hwy} {start} {end}\n")
+            pretty = format_tm_route_name(hwy)
+                f.write(f"{region} {pretty} {start} {end}\n")
 
     print(f"TM .list saved: {filename}")
 
@@ -337,4 +385,4 @@ if __name__ == "__main__":
     plot_route(route)
 
     segments = build_tm_segments(route, G)
-    save_tm_list(segments, "route.list", region="AR")
+    save_tm_list(segments, "route.list", region="LA")
