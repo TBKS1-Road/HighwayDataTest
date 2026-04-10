@@ -210,9 +210,20 @@ def save(route, filename):
         print("❌ No route generated")
         return
 
-    with open(filename, "w") as f:
-        for x, y in route:
-            f.write(f"{y} {x}\n")
+    filename = str(filename).strip().replace("\n", "").replace("\r", "")
+
+    if not filename.endswith(".txt"):
+        filename += ".txt"
+
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            for x, y in route:
+                f.write(f"{y} {x}\n")
+
+        print(f"Saved: {filename}")
+
+    except Exception as e:
+        print(f"❌ Failed to save file: {e}")
 
 
 # ----------------------------
