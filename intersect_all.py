@@ -46,6 +46,7 @@ def load_highways(folder):
                     name = file.replace(".wpt", "")
                     roads.append((name, (lon, lat)))
 
+    print(f"Loaded {len(roads)} points")
     return roads
 
 
@@ -62,7 +63,7 @@ def build_graph(roads):
             a = last[name]
             b = coord
 
-            dist = math.hypot(a[0]-b[0], a[1]-b[1])
+            dist = math.hypot(a[0] - b[0], a[1] - b[1])
 
             G.add_edge(a, b, weight=dist, highway=name)
 
@@ -75,37 +76,57 @@ def build_graph(roads):
 
 
 # ----------------------------
-# HIGHWAY TARGETS (ONE PER HIGHWAY)
+# BUILD TARGETS (FIXED + REDUCED)
 # ----------------------------
 def build_targets(G):
-    targets = defaultdict(list)
+    raw = defaultdict(list)
 
     for u, v, d in G.edges(data=True):
-        targets[d["highway"]].append(u)
-        targets[d["highway"]].append(v)
+        hwy = d["highway"]
+        raw[hwy].append(u)
+        raw[hwy].append(v)
 
-    for k in targets:
-        targets[k] = list(set(targets[k]))
+    targets = {}
 
+    for hwy, nodes in raw.items():
+        nodes = list(set(nodes))
+
+        # 🔥 CRITICAL REDUCTION (prevents explosion)
+        if len(nodes) > 3:
+            nodes = nodes[:3]
+
+        targets[hwy] = nodes
+
+    print(f"Highway groups: {len(targets)}")
     return targets
 
 
 # ----------------------------
-# DISTANCE MATRIX (CRITICAL STEP)
+# DISTANCE MATRIX (FIXED + CACHED)
 # ----------------------------
 def build_distance_matrix(G, targets):
-    print("Precomputing shortest path distances...")
-
     highways = list(targets.keys())
     n = len(highways)
 
-    dist_matrix = [[0]*n for _ in range(n)]
+    print(f"Building distance matrix: {n} nodes")
+
+    cache = {}
 
     def shortest(a, b):
+        if (a, b) in cache:
+            return cache[(a, b)]
+
         try:
-            return nx.shortest_path_length(G, a, b, weight="weight")
+            val = nx.shortest_path_length(G, a, b, weight="weight")
         except:
-            return float("inf")
+            val = float("inf")
+
+        cache[(a, b)] = val
+        cache[(b, a)] = val
+
+        return val
+
+    matrix = [[0] * n for _ in range(n)]
 
     for i in range(n):
         for j in range(n):
@@ -121,48 +142,43 @@ def build_distance_matrix(G, targets):
                 for b in targets[h2]:
                     best = min(best, shortest(a, b))
 
-            dist_matrix[i][j] = int(best)
+            matrix[i][j] = int(best)
 
         print(f"Row {i+1}/{n}")
 
-    return highways, dist_matrix
+    return highways, matrix
 
 
 # ----------------------------
-# OR-TOOLS TSP SOLVER (GLOBAL OPTIMIZATION)
+# OR-TOOLS TSP SOLVER
 # ----------------------------
-def solve_tsp(distance_matrix):
-    n = len(distance_matrix)
+def solve_tsp(matrix):
+    n = len(matrix)
 
     manager = pywrapcp.RoutingIndexManager(n, 1, 0)
     routing = pywrapcp.RoutingModel(manager)
 
-    def distance_callback(from_index, to_index):
-        from_node = manager.IndexToNode(from_index)
-        to_node = manager.IndexToNode(to_index)
-        return distance_matrix[from_node][to_node]
+    def cost(i, j):
+        a = manager.IndexToNode(i)
+        b = manager.IndexToNode(j)
+        return matrix[a][b]
 
-    transit = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit)
+    cb = routing.RegisterTransitCallback(cost)
+    routing.SetArcCostEvaluatorOfAllVehicles(cb)
 
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    params.time_limit.FromSeconds(30)
+    params.time_limit.FromSeconds(20)
 
-    solution = routing.SolveWithParameters(params)
-
-    if not solution:
-        raise Exception("No solution found")
+    sol = routing.SolveWithParameters(params)
 
     index = routing.Start(0)
-
     order = []
 
     while not routing.IsEnd(index):
-        node = manager.IndexToNode(index)
-        order.append(node)
-        index = solution.Value(routing.NextVar(index))
+        order.append(manager.IndexToNode(index))
+        index = sol.Value(routing.NextVar(index))
 
     return order
 
@@ -170,20 +186,22 @@ def solve_tsp(distance_matrix):
 # ----------------------------
 # BUILD FINAL ROUTE
 # ----------------------------
-def build_route(G, highway_order, highways, targets):
+def build_route(G, order, targets, highways):
     route = []
 
-    current = targets[highway_order[0]][0]
+    current = targets[highways[order[0]]][0]
 
-    for hwy in highway_order[1:]:
+    for idx in order[1:]:
+        hwy = highways[idx]
+
         best = None
         best_cost = float("inf")
 
         for t in targets[hwy]:
             try:
-                cost = nx.shortest_path_length(G, current, t, weight="weight")
-                if cost < best_cost:
-                    best_cost = cost
+                c = nx.shortest_path_length(G, current, t, weight="weight")
+                if c < best_cost:
+                    best_cost = c
                     best = t
             except:
                 continue
@@ -207,7 +225,7 @@ def save(route, filename):
 
 
 # ----------------------------
-# SOLVE PIPELINE
+# MAIN PIPELINE
 # ----------------------------
 def solve(folder):
     roads = load_highways(folder)
@@ -216,15 +234,13 @@ def solve(folder):
 
     targets = build_targets(G)
 
-    highways, dist_matrix = build_distance_matrix(G, targets)
+    highways, matrix = build_distance_matrix(G, targets)
 
-    print("Solving global TSP (OR-Tools)...")
-    order = solve_tsp(dist_matrix)
+    print("Solving TSP...")
+    order = solve_tsp(matrix)
 
-    ordered_highways = [highways[i] for i in order]
-
-    print("Building final route...")
-    route = build_route(G, ordered_highways, targets)
+    print("Building route...")
+    route = build_route(G, order, targets, highways)
 
     return route, G
 
