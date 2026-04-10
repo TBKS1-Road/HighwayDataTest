@@ -1,175 +1,180 @@
 import os
 import re
 import argparse
-from shapely.geometry import LineString
+import math
+from shapely.geometry import LineString, Point
 
 # ----------------------------
-# FAST PATTERN (compiled once)
+# PARSING PATTERN
 # ----------------------------
 LAT_RE = re.compile(r"lat=([-0-9.]+)")
 LON_RE = re.compile(r"lon=([-0-9.]+)")
 
 
 # ----------------------------
-# LOAD WPT FILES (OPTIMIZED)
+# LOAD HIGHWAYS
 # ----------------------------
 def load_highways(folder):
     highways = {}
-    total_files = 0
-    total_coords = 0
 
     for root, _, files in os.walk(folder):
         for filename in files:
             if not filename.lower().endswith(".wpt"):
                 continue
 
-            total_files += 1
             path = os.path.join(root, filename)
-
             coords = []
 
             try:
                 with open(path, encoding="utf-8") as f:
                     for line in f:
-                        # FAST FILTER (avoid regex unless needed)
                         if "lat=" not in line or "lon=" not in line:
                             continue
 
-                        lat_m = LAT_RE.search(line)
-                        lon_m = LON_RE.search(line)
+                        lm = LAT_RE.search(line)
+                        nm = LON_RE.search(line)
 
-                        if not lat_m or not lon_m:
+                        if not lm or not nm:
                             continue
 
-                        coords.append((
-                            float(lon_m.group(1)),
-                            float(lat_m.group(1))
-                        ))
+                        lat = float(lm.group(1))
+                        lon = float(nm.group(1))
+                        coords.append((lon, lat))
 
             except Exception as e:
-                print(f"❌ Read error {path}: {e}")
+                print(f"Read error {path}: {e}")
                 continue
 
             if len(coords) >= 2:
                 key = os.path.relpath(path, folder)
                 try:
                     highways[key] = LineString(coords)
-                    total_coords += len(coords)
-                except Exception as e:
-                    print(f"❌ Geometry error {key}: {e}")
+                except:
+                    continue
 
-            if total_files % 200 == 0:
-                print(f"📦 Processed {total_files} files...")
-
-    print("\n========================")
-    print(f"📁 Files scanned: {total_files}")
-    print(f"🧭 Highways loaded: {len(highways)}")
-    print(f"📍 Total coords: {total_coords}")
-    print("========================\n")
-
+    print(f"Loaded {len(highways)} highways")
     return highways
 
 
 # ----------------------------
-# FAST BOUNDS (NO unary_union)
+# GEOMETRIC HELPERS
 # ----------------------------
-def compute_bounds(highways):
-    minx = min(g.bounds[0] for g in highways.values())
-    miny = min(g.bounds[1] for g in highways.values())
-    maxx = max(g.bounds[2] for g in highways.values())
-    maxy = max(g.bounds[3] for g in highways.values())
-
-    return (minx, miny, maxx, maxy)
+def centroid(geom):
+    c = geom.centroid
+    return (c.x, c.y)
 
 
-# ----------------------------
-# ZIGZAG PATH
-# ----------------------------
-def make_zigzag(bounds, passes=12):
-    minx, miny, maxx, maxy = bounds
-    step = (maxy - miny) / max(passes, 1)
-
-    points = []
-    y = miny
-    direction = 1
-
-    for _ in range(passes + 1):
-        if direction == 1:
-            points.append((minx, y))
-            points.append((maxx, y))
-        else:
-            points.append((maxx, y))
-            points.append((minx, y))
-
-        direction *= -1
-        y += step
-
-    return LineString(points)
+def dist(a, b):
+    return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
 # ----------------------------
-# COVERAGE CHECK
+# BUILD HIGHWAY GRAPH (SPATIAL)
+# ----------------------------
+def build_graph(highways):
+    nodes = {name: centroid(g) for name, g in highways.items()}
+
+    return nodes
+
+
+# ----------------------------
+# GREEDY TRAVERSAL PATH
+# ----------------------------
+def build_traversal_path(highways):
+    nodes = build_graph(highways)
+
+    unvisited = set(nodes.keys())
+
+    # start from an arbitrary highway
+    current = next(iter(unvisited))
+    unvisited.remove(current)
+
+    path_points = [nodes[current]]
+
+    while unvisited:
+        current_pos = nodes[current]
+
+        # find nearest unvisited highway centroid
+        next_node = min(
+            unvisited,
+            key=lambda n: dist(current_pos, nodes[n])
+        )
+
+        path_points.append(nodes[next_node])
+        unvisited.remove(next_node)
+        current = next_node
+
+    return LineString(path_points)
+
+
+# ----------------------------
+# COVERAGE CHECK (TRUE INTERSECTION)
 # ----------------------------
 def check_coverage(path, highways):
-    return [
-        name for name, geom in highways.items()
-        if not path.intersects(geom)
-    ]
+    missed = []
+
+    for name, geom in highways.items():
+        if not path.intersects(geom):
+            missed.append(name)
+
+    return missed
 
 
 # ----------------------------
-# DETOUR INSERTION
+# OPTIONAL IMPROVEMENT LOOP
+# (local refinement pass)
 # ----------------------------
-def add_detour(path, geom):
-    midpoint = geom.interpolate(0.5, normalized=True)
+def refine_path(path, highways, iterations=10):
     coords = list(path.coords)
 
-    best_i = 0
-    best_d = float("inf")
+    for _ in range(iterations):
+        missed = check_coverage(LineString(coords), highways)
 
-    for i in range(len(coords) - 1):
-        seg = LineString([coords[i], coords[i + 1]])
-        d = seg.distance(midpoint)
+        if not missed:
+            break
 
-        if d < best_d:
-            best_d = d
-            best_i = i + 1
+        # insert centroid of missed highway near closest segment
+        for name in missed[:20]:
+            g = highways[name]
+            mid = g.centroid
 
-    coords.insert(best_i, (midpoint.x, midpoint.y))
+            best_i = 0
+            best_d = float("inf")
+
+            for i in range(len(coords) - 1):
+                seg = LineString([coords[i], coords[i + 1]])
+                d = seg.distance(mid)
+
+                if d < best_d:
+                    best_d = d
+                    best_i = i + 1
+
+            coords.insert(best_i, (mid.x, mid.y))
+
     return LineString(coords)
 
 
 # ----------------------------
-# SOLVER
+# SOLVE
 # ----------------------------
-def solve(folder, passes=12, max_iter=50):
-    print("Loading highways...")
+def solve(folder, refine_iters=5):
     highways = load_highways(folder)
 
     if not highways:
-        raise ValueError("❌ No highways loaded. Check folder path or WPT format.")
+        raise ValueError("No highways loaded")
 
-    print("Computing bounds (fast)...")
-    bounds = compute_bounds(highways)
+    print("Building traversal path...")
+    path = build_traversal_path(highways)
 
-    print("Creating initial zig-zag path...")
-    path = make_zigzag(bounds, passes)
+    print("Initial coverage check...")
+    missed = check_coverage(path, highways)
+    print(f"Missed initially: {len(missed)}")
 
-    for i in range(max_iter):
-        missed = check_coverage(path, highways)
+    print("Refining path...")
+    path = refine_path(path, highways, iterations=refine_iters)
 
-        print(f"Iteration {i+1}: missed {len(missed)}")
-
-        if not missed:
-            print("✅ All highways intersected!")
-            break
-
-        best = min(
-            missed,
-            key=lambda n: highways[n].distance(path)
-        )
-        
-        path = add_detour(path, highways[name])
+    missed = check_coverage(path, highways)
+    print(f"Final missed: {len(missed)}")
 
     return path, highways
 
@@ -184,63 +189,42 @@ def save_path(path, filename="path.txt"):
 
 
 # ----------------------------
-# OPTIONAL PLOT
+# FOLIUM MAP
 # ----------------------------
-def plot_result(path, highways):
-    import matplotlib.pyplot as plt
-
-    for g in highways.values():
-        x, y = g.xy
-        plt.plot(x, y, linewidth=0.4)
-
-    x, y = path.xy
-    plt.plot(x, y, linewidth=2)
-
-    plt.title("Intersect-All Path")
-    plt.show()
-
 def plot_folium(path, highways, output_html="map.html"):
     import folium
 
     first_lon, first_lat = path.coords[0]
-
     m = folium.Map(location=[first_lat, first_lon], zoom_start=7)
 
-    # highways (blue)
+    # highways
     for geom in highways.values():
         coords = [(lat, lon) for lon, lat in geom.coords]
         folium.PolyLine(coords, color="blue", weight=1).add_to(m)
 
-    # path (red)
+    # path
     path_coords = [(lat, lon) for lon, lat in path.coords]
     folium.PolyLine(path_coords, color="red", weight=4).add_to(m)
 
     m.save(output_html)
-    print(f"Saved map to {output_html}")
+    print(f"Saved map: {output_html}")
 
 
 # ----------------------------
-# ENTRY
+# MAIN
 # ----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("folder")
-    parser.add_argument("--passes", type=int, default=12)
-    parser.add_argument("--plot", action="store_true")
-    parser.add_argument("--map", action="store_true")
     parser.add_argument("--output", default="path.txt")
+    parser.add_argument("--map", action="store_true")
 
     args = parser.parse_args()
 
-    path, highways = solve(args.folder, passes=args.passes)
+    path, highways = solve(args.folder)
 
     save_path(path, args.output)
-    print(f"Saved to {args.output}")
-
-    if args.plot:
-        plot_result(path, highways)
+    print(f"Saved: {args.output}")
 
     if args.map:
-        plot_result(path, highways)
-
-
+        plot_folium(path, highways)
