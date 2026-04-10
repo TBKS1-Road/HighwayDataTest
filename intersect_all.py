@@ -142,7 +142,9 @@ def build_distance_matrix(G, targets):
                 for b in targets[h2]:
                     best = min(best, shortest(a, b))
 
-            matrix[i][j] = int(best)
+            if best == float("inf"):
+                best = 10**9  # large penalty instead of infinity
+                print(f"⚠ disconnected: {h1} -> {h2}")
 
         print(f"Row {i+1}/{n}")
 
