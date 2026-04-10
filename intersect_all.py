@@ -16,64 +16,42 @@ LON_RE = re.compile(r"lon=([-0-9.]+)")
 # ----------------------------
 def load_highways(folder):
     highways = {}
-    total_files = 0
-    failed_files = 0
 
     for root, _, files in os.walk(folder):
         for filename in files:
-            if not filename.lower().endswith(".wpt"):
+            if not filename.endswith(".wpt"):
                 continue
 
-            total_files += 1
             path = os.path.join(root, filename)
+
+            print("\nREADING:", path)
+
             coords = []
 
-            try:
-                with open(path, encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
 
-                        lat_match = LAT_RE.search(line)
-                        lon_match = LON_RE.search(line)
+                    if "lat=" not in line or "lon=" not in line:
+                        print("SKIP LINE:", line)
+                        continue
 
-                        if not lat_match or not lon_match:
-                            continue
+                    import re
+                    lat = re.search(r"lat=([-0-9.]+)", line)
+                    lon = re.search(r"lon=([-0-9.]+)", line)
 
-                        lat = float(lat_match.group(1))
-                        lon = float(lon_match.group(1))
+                    if not lat or not lon:
+                        print("FAILED PARSE:", line)
+                        continue
 
-                        coords.append((lon, lat))  # shapely uses (x, y)
+                    coords.append((float(lon.group(1)), float(lat.group(1))))
 
-            except Exception as e:
-                print(f"❌ Failed reading {path}: {e}")
-                failed_files += 1
-                continue
+            print("COORDS FOUND:", len(coords))
 
-            # IMPORTANT: avoid overwriting duplicates
-            key = os.path.relpath(path, folder)
-
-            if len(coords) < 2:
-                continue
-
-            try:
-                geom = LineString(coords)
-
-                if not geom.is_valid or geom.is_empty:
-                    continue
-
-                highways[key] = geom
-
-            except Exception as e:
-                print(f"❌ Invalid geometry {key}: {e}")
-
-    print(f"\n📦 WPT files scanned: {total_files}")
-    print(f"⚠️ Failed files: {failed_files}")
-    print(f"✅ Loaded highways: {len(highways)}\n")
+            if len(coords) >= 2:
+                highways[path] = LineString(coords)
 
     return highways
-
 
 # ----------------------------
 # CREATE ZIGZAG PATH
