@@ -164,7 +164,11 @@ def solve(folder, passes=12, max_iter=50):
             print("✅ All highways intersected!")
             break
 
-        for name in missed[:10]:
+        best = min(
+            missed,
+            key=lambda n: highways[n].distance(path)
+        )
+        
             path = add_detour(path, highways[name])
 
     return path, highways
@@ -222,6 +226,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("folder")
     parser.add_argument("--passes", type=int, default=12)
+    parser.add_argument("--plot", action="store_true")
     parser.add_argument("--map", action="store_true")
     parser.add_argument("--output", default="path.txt")
 
