@@ -2,59 +2,88 @@ import os
 import re
 import argparse
 from shapely.geometry import LineString
-from shapely.ops import unary_union
 
 # ----------------------------
-# REGEX (robust extraction)
+# FAST PATTERN (compiled once)
 # ----------------------------
 LAT_RE = re.compile(r"lat=([-0-9.]+)")
 LON_RE = re.compile(r"lon=([-0-9.]+)")
 
 
 # ----------------------------
-# LOAD WPT FILES (FIXED)
+# LOAD WPT FILES (OPTIMIZED)
 # ----------------------------
 def load_highways(folder):
     highways = {}
+    total_files = 0
+    total_coords = 0
 
     for root, _, files in os.walk(folder):
         for filename in files:
-            if not filename.endswith(".wpt"):
+            if not filename.lower().endswith(".wpt"):
                 continue
 
+            total_files += 1
             path = os.path.join(root, filename)
-
-            print("\nREADING:", path)
 
             coords = []
 
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
+            try:
+                with open(path, encoding="utf-8") as f:
+                    for line in f:
+                        # FAST FILTER (avoid regex unless needed)
+                        if "lat=" not in line or "lon=" not in line:
+                            continue
 
-                    if "lat=" not in line or "lon=" not in line:
-                        print("SKIP LINE:", line)
-                        continue
+                        lat_m = LAT_RE.search(line)
+                        lon_m = LON_RE.search(line)
 
-                    import re
-                    lat = re.search(r"lat=([-0-9.]+)", line)
-                    lon = re.search(r"lon=([-0-9.]+)", line)
+                        if not lat_m or not lon_m:
+                            continue
 
-                    if not lat or not lon:
-                        print("FAILED PARSE:", line)
-                        continue
+                        coords.append((
+                            float(lon_m.group(1)),
+                            float(lat_m.group(1))
+                        ))
 
-                    coords.append((float(lon.group(1)), float(lat.group(1))))
-
-            print("COORDS FOUND:", len(coords))
+            except Exception as e:
+                print(f"❌ Read error {path}: {e}")
+                continue
 
             if len(coords) >= 2:
-                highways[path] = LineString(coords)
+                key = os.path.relpath(path, folder)
+                try:
+                    highways[key] = LineString(coords)
+                    total_coords += len(coords)
+                except Exception as e:
+                    print(f"❌ Geometry error {key}: {e}")
+
+            if total_files % 200 == 0:
+                print(f"📦 Processed {total_files} files...")
+
+    print("\n========================")
+    print(f"📁 Files scanned: {total_files}")
+    print(f"🧭 Highways loaded: {len(highways)}")
+    print(f"📍 Total coords: {total_coords}")
+    print("========================\n")
 
     return highways
 
+
 # ----------------------------
-# CREATE ZIGZAG PATH
+# FAST BOUNDS (NO unary_union)
+# ----------------------------
+def compute_bounds(highways):
+    minx = min(g.bounds[0] for g in highways.values())
+    miny = min(g.bounds[1] for g in highways.values())
+    maxx = max(g.bounds[2] for g in highways.values())
+    maxy = max(g.bounds[3] for g in highways.values())
+
+    return (minx, miny, maxx, maxy)
+
+
+# ----------------------------
+# ZIGZAG PATH
 # ----------------------------
 def make_zigzag(bounds, passes=12):
     minx, miny, maxx, maxy = bounds
@@ -79,39 +108,34 @@ def make_zigzag(bounds, passes=12):
 
 
 # ----------------------------
-# CHECK COVERAGE
+# COVERAGE CHECK
 # ----------------------------
 def check_coverage(path, highways):
-    missed = []
-
-    for name, geom in highways.items():
-        if not path.intersects(geom):
-            missed.append(name)
-
-    return missed
+    return [
+        name for name, geom in highways.items()
+        if not path.intersects(geom)
+    ]
 
 
 # ----------------------------
-# ADD DETOUR (unchanged logic)
+# DETOUR INSERTION
 # ----------------------------
 def add_detour(path, geom):
     midpoint = geom.interpolate(0.5, normalized=True)
-
     coords = list(path.coords)
 
-    min_dist = float("inf")
-    insert_index = 0
+    best_i = 0
+    best_d = float("inf")
 
     for i in range(len(coords) - 1):
         seg = LineString([coords[i], coords[i + 1]])
-        dist = seg.distance(midpoint)
+        d = seg.distance(midpoint)
 
-        if dist < min_dist:
-            min_dist = dist
-            insert_index = i + 1
+        if d < best_d:
+            best_d = d
+            best_i = i + 1
 
-    coords.insert(insert_index, (midpoint.x, midpoint.y))
-
+    coords.insert(best_i, (midpoint.x, midpoint.y))
     return LineString(coords)
 
 
@@ -123,23 +147,18 @@ def solve(folder, passes=12, max_iter=50):
     highways = load_highways(folder)
 
     if not highways:
-        raise ValueError("❌ No highways loaded. Check folder path or WPT parsing.")
+        raise ValueError("❌ No highways loaded. Check folder path or WPT format.")
 
-    print("Building bounding box...")
-    minx = min(g.bounds[0] for g in highways.values())
-    miny = min(g.bounds[1] for g in highways.values())
-    maxx = max(g.bounds[2] for g in highways.values())
-    maxy = max(g.bounds[3] for g in highways.values())
-
-    bounds = (minx, miny, maxx, maxy)
+    print("Computing bounds (fast)...")
+    bounds = compute_bounds(highways)
 
     print("Creating initial zig-zag path...")
-    path = make_zigzag(bounds, passes=passes)
+    path = make_zigzag(bounds, passes)
 
-    for iteration in range(max_iter):
+    for i in range(max_iter):
         missed = check_coverage(path, highways)
 
-        print(f"Iteration {iteration+1}: {len(missed)} highways missed")
+        print(f"Iteration {i+1}: missed {len(missed)}")
 
         if not missed:
             print("✅ All highways intersected!")
@@ -152,25 +171,6 @@ def solve(folder, passes=12, max_iter=50):
 
 
 # ----------------------------
-# PLOTTING
-# ----------------------------
-def plot_result(path, highways):
-    import matplotlib.pyplot as plt
-
-    for geom in highways.values():
-        x, y = geom.xy
-        plt.plot(x, y, linewidth=0.5)
-
-    x, y = path.xy
-    plt.plot(x, y, linewidth=2)
-
-    plt.title("Intersect-All Path")
-    plt.xlabel("Longitude")
-    plt.ylabel("Latitude")
-    plt.show()
-
-
-# ----------------------------
 # SAVE OUTPUT
 # ----------------------------
 def save_path(path, filename="path.txt"):
@@ -180,10 +180,27 @@ def save_path(path, filename="path.txt"):
 
 
 # ----------------------------
-# ENTRY POINT
+# OPTIONAL PLOT
+# ----------------------------
+def plot_result(path, highways):
+    import matplotlib.pyplot as plt
+
+    for g in highways.values():
+        x, y = g.xy
+        plt.plot(x, y, linewidth=0.4)
+
+    x, y = path.xy
+    plt.plot(x, y, linewidth=2)
+
+    plt.title("Intersect-All Path")
+    plt.show()
+
+
+# ----------------------------
+# ENTRY
 # ----------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Intersect all highways from WPT files")
+    parser = argparse.ArgumentParser()
     parser.add_argument("folder")
     parser.add_argument("--passes", type=int, default=12)
     parser.add_argument("--plot", action="store_true")
@@ -194,7 +211,7 @@ if __name__ == "__main__":
     path, highways = solve(args.folder, passes=args.passes)
 
     save_path(path, args.output)
-    print(f"Saved path to {args.output}")
+    print(f"Saved to {args.output}")
 
     if args.plot:
         plot_result(path, highways)
