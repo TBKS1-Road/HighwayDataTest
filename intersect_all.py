@@ -1,11 +1,11 @@
 import os
-import argparse
-from shapely.geometry import LineString, Point
-from shapely.ops import unary_union
+import re
+from shapely.geometry import LineString
 
-# ----------------------------
-# LOAD WPT FILES
-# ----------------------------
+# regex to extract lat/lon from URLs
+LAT_RE = re.compile(r"lat=([-0-9.]+)")
+LON_RE = re.compile(r"lon=([-0-9.]+)")
+
 def load_highways(folder):
     highways = {}
 
@@ -19,16 +19,20 @@ def load_highways(folder):
 
             with open(path, encoding="utf-8") as f:
                 for line in f:
-                    parts = line.strip().split()
-                    if len(parts) < 3:
+                    line = line.strip()
+                    if not line:
                         continue
 
-                    try:
-                        lat = float(parts[-2])
-                        lon = float(parts[-1])
-                        coords.append((lon, lat))  # shapely uses (x, y)
-                    except ValueError:
+                    lat_match = LAT_RE.search(line)
+                    lon_match = LON_RE.search(line)
+
+                    if not lat_match or not lon_match:
                         continue
+
+                    lat = float(lat_match.group(1))
+                    lon = float(lon_match.group(1))
+
+                    coords.append((lon, lat))  # shapely uses (x, y)
 
             if len(coords) >= 2:
                 highways[filename] = LineString(coords)
