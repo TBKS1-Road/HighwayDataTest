@@ -269,10 +269,18 @@ def build_tm_segments(route, G):
 def format_tm_route_name(raw_name):
     """
     Convert filename-style highway names to TM visual names
-    Handles suffixes safely (e.g., i049bel -> I-49Bel)
+    Works for ANY state (TN, LA, AR, etc.)
     """
 
-    name = raw_name.split(".")[-1].lower()
+    parts = raw_name.lower().split(".")
+
+    # If format is like tn.tn049 → ['tn', 'tn049']
+    if len(parts) == 2:
+        region, name = parts
+        region = region.upper()
+    else:
+        name = parts[-1]
+        region = ""
 
     def split_num_suffix(s):
         num = ""
@@ -286,36 +294,24 @@ def format_tm_route_name(raw_name):
 
     # Interstate
     if name.startswith("i"):
-        base = name[1:]
-        num, suffix = split_num_suffix(base)
-
-        if not num:
-            return raw_name.upper()
-
-        return f"I-{int(num)}{suffix.title()}"
+        num, suffix = split_num_suffix(name[1:])
+        if num:
+            return f"I-{int(num)}{suffix.title()}"
 
     # US routes
     if name.startswith("us"):
-        base = name[2:]
-        num, suffix = split_num_suffix(base)
+        num, suffix = split_num_suffix(name[2:])
+        if num:
+            return f"US{int(num)}{suffix.title()}"
 
-        if not num:
-            return raw_name.upper()
+    # State routes (generic, works for TN, LA, AR, etc.)
+    if name.startswith(region.lower()):
+        num, suffix = split_num_suffix(name[len(region):])
+        if num:
+            return f"{region}{int(num)}{suffix.title()}"
 
-        return f"US{int(num)}{suffix.title()}"
-
-    # State routes (LA, AR, etc.)
-    if name.startswith("la"):
-        base = name[2:]
-        num, suffix = split_num_suffix(base)
-
-        if not num:
-            return raw_name.upper()
-
-        return f"LA{int(num)}{suffix.title()}"
-
-    # fallback
-    return raw_name.upper()
+    # Fallback
+    return name.upper()
 
 def detect_region(roads):
     """
