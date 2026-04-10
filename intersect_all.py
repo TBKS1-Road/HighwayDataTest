@@ -1,44 +1,76 @@
 import os
 import re
 import argparse
-from shapely.geometry import LineString, Point
+from shapely.geometry import LineString
 from shapely.ops import unary_union
 
-
-# regex to extract lat/lon from URLs
+# ----------------------------
+# REGEX (robust extraction)
+# ----------------------------
 LAT_RE = re.compile(r"lat=([-0-9.]+)")
 LON_RE = re.compile(r"lon=([-0-9.]+)")
 
+
+# ----------------------------
+# LOAD WPT FILES (FIXED)
+# ----------------------------
 def load_highways(folder):
     highways = {}
+    total_files = 0
+    failed_files = 0
 
     for root, _, files in os.walk(folder):
         for filename in files:
-            if not filename.endswith(".wpt"):
+            if not filename.lower().endswith(".wpt"):
                 continue
 
+            total_files += 1
             path = os.path.join(root, filename)
             coords = []
 
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
+            try:
+                with open(path, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
 
-                    lat_match = LAT_RE.search(line)
-                    lon_match = LON_RE.search(line)
+                        lat_match = LAT_RE.search(line)
+                        lon_match = LON_RE.search(line)
 
-                    if not lat_match or not lon_match:
-                        continue
+                        if not lat_match or not lon_match:
+                            continue
 
-                    lat = float(lat_match.group(1))
-                    lon = float(lon_match.group(1))
+                        lat = float(lat_match.group(1))
+                        lon = float(lon_match.group(1))
 
-                    coords.append((lon, lat))  # shapely uses (x, y)
+                        coords.append((lon, lat))  # shapely uses (x, y)
 
-            if len(coords) >= 2:
-                highways[filename] = LineString(coords)
+            except Exception as e:
+                print(f"❌ Failed reading {path}: {e}")
+                failed_files += 1
+                continue
+
+            # IMPORTANT: avoid overwriting duplicates
+            key = os.path.relpath(path, folder)
+
+            if len(coords) < 2:
+                continue
+
+            try:
+                geom = LineString(coords)
+
+                if not geom.is_valid or geom.is_empty:
+                    continue
+
+                highways[key] = geom
+
+            except Exception as e:
+                print(f"❌ Invalid geometry {key}: {e}")
+
+    print(f"\n📦 WPT files scanned: {total_files}")
+    print(f"⚠️ Failed files: {failed_files}")
+    print(f"✅ Loaded highways: {len(highways)}\n")
 
     return highways
 
@@ -48,7 +80,7 @@ def load_highways(folder):
 # ----------------------------
 def make_zigzag(bounds, passes=12):
     minx, miny, maxx, maxy = bounds
-    step = (maxy - miny) / passes
+    step = (maxy - miny) / max(passes, 1)
 
     points = []
     y = miny
@@ -69,7 +101,7 @@ def make_zigzag(bounds, passes=12):
 
 
 # ----------------------------
-# CHECK INTERSECTIONS
+# CHECK COVERAGE
 # ----------------------------
 def check_coverage(path, highways):
     missed = []
@@ -82,14 +114,13 @@ def check_coverage(path, highways):
 
 
 # ----------------------------
-# ADD DETOUR TO A HIGHWAY
+# ADD DETOUR (unchanged logic)
 # ----------------------------
 def add_detour(path, geom):
     midpoint = geom.interpolate(0.5, normalized=True)
 
     coords = list(path.coords)
 
-    # Insert detour near closest point instead of just appending
     min_dist = float("inf")
     insert_index = 0
 
@@ -107,12 +138,14 @@ def add_detour(path, geom):
 
 
 # ----------------------------
-# MAIN SOLVER
+# SOLVER
 # ----------------------------
 def solve(folder, passes=12, max_iter=50):
     print("Loading highways...")
     highways = load_highways(folder)
-    print(f"Loaded {len(highways)} highways")
+
+    if not highways:
+        raise ValueError("❌ No highways loaded. Check folder path or WPT parsing.")
 
     print("Building bounding box...")
     union = unary_union(list(highways.values()))
@@ -130,7 +163,6 @@ def solve(folder, passes=12, max_iter=50):
             print("✅ All highways intersected!")
             break
 
-        # Add detours for a batch of missed highways
         for name in missed[:10]:
             path = add_detour(path, highways[name])
 
@@ -138,14 +170,14 @@ def solve(folder, passes=12, max_iter=50):
 
 
 # ----------------------------
-# OPTIONAL PLOTTING
+# PLOTTING
 # ----------------------------
 def plot_result(path, highways):
     import matplotlib.pyplot as plt
 
     for geom in highways.values():
         x, y = geom.xy
-        plt.plot(x, y)
+        plt.plot(x, y, linewidth=0.5)
 
     x, y = path.xy
     plt.plot(x, y, linewidth=2)
@@ -157,12 +189,12 @@ def plot_result(path, highways):
 
 
 # ----------------------------
-# SAVE PATH
+# SAVE OUTPUT
 # ----------------------------
 def save_path(path, filename="path.txt"):
     with open(filename, "w") as f:
         for x, y in path.coords:
-            f.write(f"{y} {x}\n")  # lat lon format
+            f.write(f"{y} {x}\n")
 
 
 # ----------------------------
@@ -170,10 +202,10 @@ def save_path(path, filename="path.txt"):
 # ----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Intersect all highways from WPT files")
-    parser.add_argument("folder", help="Path to WPT folder (e.g., hwy_data/AR)")
-    parser.add_argument("--passes", type=int, default=12, help="Zig-zag density")
-    parser.add_argument("--plot", action="store_true", help="Show plot")
-    parser.add_argument("--output", default="path.txt", help="Output file")
+    parser.add_argument("folder")
+    parser.add_argument("--passes", type=int, default=12)
+    parser.add_argument("--plot", action="store_true")
+    parser.add_argument("--output", default="path.txt")
 
     args = parser.parse_args()
 
