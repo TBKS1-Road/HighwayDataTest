@@ -9,9 +9,9 @@ import folium
 
 
 # ----------------------------
-# SETTINGS (tweak for speed)
+# SETTINGS
 # ----------------------------
-TARGETS_PER_HIGHWAY = 1  
+TARGETS_PER_HIGHWAY = 1   # keep 1 for TM-style coverage
 
 
 # ----------------------------
@@ -22,7 +22,7 @@ LON_RE = re.compile(r"lon=([-0-9.]+)")
 
 
 # ----------------------------
-# LOAD WPT FILES
+# LOAD WPT FILES (WITH LABELS)
 # ----------------------------
 def load_highways(folder):
     roads = []
@@ -48,21 +48,25 @@ def load_highways(folder):
                     lat = float(lm.group(1))
                     lon = float(nm.group(1))
 
+                    label = line.strip().split()[0]
                     name = file.replace(".wpt", "")
-                    roads.append((name, (lon, lat)))
+
+                    roads.append((name, (lon, lat), label))
 
     print(f"Loaded {len(roads)} points")
     return roads
 
 
 # ----------------------------
-# BUILD GRAPH
+# BUILD GRAPH (WITH LABELS)
 # ----------------------------
 def build_graph(roads):
     G = nx.Graph()
     last = {}
 
-    for name, coord in tqdm(roads, desc="Building graph"):
+    for name, coord, label in tqdm(roads, desc="Building graph"):
+        G.add_node(coord, label=label, highway=name)
+
         if name in last:
             a = last[name]
             b = coord
@@ -79,7 +83,7 @@ def build_graph(roads):
 
 
 # ----------------------------
-# BUILD TARGETS
+# BUILD TARGETS (SMART PICK)
 # ----------------------------
 def build_targets(G):
     raw = defaultdict(list)
@@ -94,6 +98,7 @@ def build_targets(G):
     for hwy, nodes in raw.items():
         nodes = list(set(nodes))
 
+        # pick most connected node
         best_node = max(nodes, key=lambda n: G.degree(n))
 
         targets[hwy] = [best_node]
@@ -103,7 +108,7 @@ def build_targets(G):
 
 
 # ----------------------------
-# PRECOMPUTE DISTANCES (BIG WIN)
+# PRECOMPUTE DISTANCES
 # ----------------------------
 def precompute_distances(G, targets):
     print("Precomputing distances...")
@@ -121,15 +126,12 @@ def precompute_distances(G, targets):
     return dist_map
 
 
-# ----------------------------
-# FAST DISTANCE LOOKUP
-# ----------------------------
 def fast_distance(dist_map, a, b):
     return dist_map.get(a, {}).get(b, float("inf"))
 
 
 # ----------------------------
-# COMPUTE ORDER (OPTIMIZED)
+# COMPUTE ORDER
 # ----------------------------
 def compute_order(G, targets):
     dist_map = precompute_distances(G, targets)
@@ -160,7 +162,6 @@ def compute_order(G, targets):
 
             order.append(best)
             current = best
-
             pbar.update(1)
 
     return order
@@ -211,7 +212,6 @@ def build_route(G, order, targets):
 # ----------------------------
 def save(route, filename):
     if not route:
-        print("❌ No route generated")
         return
 
     if not filename.endswith(".txt"):
@@ -222,6 +222,68 @@ def save(route, filename):
             f.write(f"{y} {x}\n")
 
     print(f"Saved: {filename}")
+
+
+# ----------------------------
+# BUILD TM SEGMENTS
+# ----------------------------
+def build_tm_segments(route, G):
+    segments = []
+
+    if not route:
+        return segments
+
+    prev_hwy = None
+    start_label = None
+    prev_label = None
+
+    for node in route:
+        data = G.nodes.get(node, {})
+        hwy = data.get("highway")
+        label = data.get("label")
+
+        if not hwy or not label:
+            continue
+
+        if prev_hwy is None:
+            prev_hwy = hwy
+            start_label = label
+            prev_label = label
+            continue
+
+        if hwy != prev_hwy:
+            segments.append((prev_hwy, start_label, prev_label))
+            prev_hwy = hwy
+            start_label = label
+
+        prev_label = label
+
+    if prev_hwy and start_label and prev_label:
+        segments.append((prev_hwy, start_label, prev_label))
+
+    # remove duplicates
+    segments = list(dict.fromkeys(segments))
+
+    return segments
+
+
+# ----------------------------
+# SAVE TM LIST
+# ----------------------------
+def save_tm_list(segments, filename="route.list", region="AR"):
+    if not segments:
+        return
+
+    if not filename.endswith(".list"):
+        filename += ".list"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        for hwy, start, end in segments:
+            if start == end:
+                continue
+            f.write(f"{region} {hwy} {start} {end}\n")
+
+    print(f"TM .list saved: {filename}")
 
 
 # ----------------------------
@@ -259,7 +321,7 @@ def solve(folder):
     print("Building route...")
     route = build_route(G, order, targets)
 
-    return route
+    return route, G
 
 
 if __name__ == "__main__":
@@ -269,7 +331,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    route = solve(args.folder)
+    route, G = solve(args.folder)
 
     save(route, args.output)
     plot_route(route)
+
+    segments = build_tm_segments(route, G)
+    save_tm_list(segments, "route.list", region="AR")
