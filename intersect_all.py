@@ -126,8 +126,12 @@ def solve(folder, passes=12, max_iter=50):
         raise ValueError("❌ No highways loaded. Check folder path or WPT parsing.")
 
     print("Building bounding box...")
-    union = unary_union(list(highways.values()))
-    bounds = union.bounds
+    minx = min(g.bounds[0] for g in highways.values())
+    miny = min(g.bounds[1] for g in highways.values())
+    maxx = max(g.bounds[2] for g in highways.values())
+    maxy = max(g.bounds[3] for g in highways.values())
+
+    bounds = (minx, miny, maxx, maxy)
 
     print("Creating initial zig-zag path...")
     path = make_zigzag(bounds, passes=passes)
