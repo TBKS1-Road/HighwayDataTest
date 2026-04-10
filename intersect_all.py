@@ -5,9 +5,6 @@ import argparse
 import networkx as nx
 from collections import defaultdict
 
-from ortools.constraint_solver import pywrapcp
-from ortools.constraint_solver import routing_enums_pb2
-
 
 # ----------------------------
 # PARSING
@@ -76,7 +73,7 @@ def build_graph(roads):
 
 
 # ----------------------------
-# BUILD TARGET NODES (HIGHWAY REPRESENTATIVES)
+# BUILD HIGHWAY GROUPS
 # ----------------------------
 def build_targets(G):
     raw = defaultdict(list)
@@ -91,151 +88,105 @@ def build_targets(G):
     for hwy, nodes in raw.items():
         nodes = list(set(nodes))
 
-        # keep only a few representative nodes per highway
-        if len(nodes) > 3:
-            nodes = nodes[:3]
-
-        targets[hwy] = nodes
+        # keep only a few representative nodes
+        targets[hwy] = nodes[:3]
 
     print(f"Highway groups: {len(targets)}")
     return targets
 
 
 # ----------------------------
-# 🔥 GRAPH COMPRESSION (CRITICAL FIX)
+# COMPONENT-AWARE CONNECTIVITY MAP
 # ----------------------------
-def compress_graph(G, targets):
-    important = set()
+def build_components(G):
+    comps = list(nx.connected_components(G))
+    node_to_comp = {}
 
-    # keep all highway nodes
-    for nodes in targets.values():
-        for n in nodes:
-            important.add(n)
+    for i, c in enumerate(comps):
+        for n in c:
+            node_to_comp[n] = i
 
-    # expand by 1-hop neighbors to preserve connectivity
-    expanded = set(important)
-
-    for n in list(important):
-        for nbr in G.neighbors(n):
-            expanded.add(nbr)
-
-    H = G.subgraph(expanded).copy()
-
-    print("\n========================")
-    print(f"Compressed graph nodes: {len(H.nodes)}")
-    print(f"Compressed graph edges: {len(H.edges)}")
-    print("========================\n")
-
-    return H
+    print(f"Connected components: {len(comps)}")
+    return node_to_comp
 
 
 # ----------------------------
-# DISTANCE MATRIX (FAST + SAFE)
+# SAFE DISTANCE (COMPONENT AWARE)
 # ----------------------------
-def build_distance_matrix(G, targets):
+def safe_distance(G, node_to_comp, a, b):
+    if node_to_comp.get(a) != node_to_comp.get(b):
+        return float("inf")
+
+    try:
+        return nx.shortest_path_length(G, a, b, weight="weight")
+    except:
+        return float("inf")
+
+
+# ----------------------------
+# SIMPLE GREEDY ORDER (FAST + RELIABLE)
+# ----------------------------
+def compute_order(G, targets, node_to_comp):
     highways = list(targets.keys())
-    n = len(highways)
+    remaining = set(highways)
 
-    print(f"Building distance matrix: {n} nodes")
+    current = remaining.pop()
+    order = [current]
 
-    cache = {}
+    while remaining:
+        best = None
+        best_cost = float("inf")
 
-    def shortest(a, b):
-        if (a, b) in cache:
-            return cache[(a, b)]
+        for hwy in remaining:
+            for a in targets[current]:
+                for b in targets[hwy]:
+                    d = safe_distance(G, node_to_comp, a, b)
+                    if d < best_cost:
+                        best_cost = d
+                        best = hwy
 
-        try:
-            val = nx.shortest_path_length(G, a, b, weight="weight")
-        except:
-            val = float("inf")
+        if best is None:
+            best = remaining.pop()
+        else:
+            remaining.remove(best)
 
-        cache[(a, b)] = val
-        cache[(b, a)] = val
-        return val
-
-    matrix = [[0] * n for _ in range(n)]
-
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue
-
-            h1 = highways[i]
-            h2 = highways[j]
-
-            best = float("inf")
-
-            for a in targets[h1]:
-                for b in targets[h2]:
-                    best = min(best, shortest(a, b))
-
-            # prevent OR-Tools crash
-            if best == float("inf"):
-                best = 10**9
-
-            matrix[i][j] = int(best)
-
-        print(f"Row {i+1}/{n}")
-
-    return highways, matrix
-
-
-# ----------------------------
-# OR-TOOLS TSP
-# ----------------------------
-def solve_tsp(matrix):
-    n = len(matrix)
-
-    manager = pywrapcp.RoutingIndexManager(n, 1, 0)
-    routing = pywrapcp.RoutingModel(manager)
-
-    def cost(i, j):
-        a = manager.IndexToNode(i)
-        b = manager.IndexToNode(j)
-        return matrix[a][b]
-
-    cb = routing.RegisterTransitCallback(cost)
-    routing.SetArcCostEvaluatorOfAllVehicles(cb)
-
-    params = pywrapcp.DefaultRoutingSearchParameters()
-    params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-    params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    params.time_limit.FromSeconds(15)
-
-    sol = routing.SolveWithParameters(params)
-
-    index = routing.Start(0)
-    order = []
-
-    while not routing.IsEnd(index):
-        order.append(manager.IndexToNode(index))
-        index = sol.Value(routing.NextVar(index))
+        order.append(best)
+        current = best
 
     return order
 
 
 # ----------------------------
-# BUILD FINAL ROUTE (FAST)
+# ROUTE BUILDER (SAFE)
 # ----------------------------
-def build_route(G, order, targets, highways):
+def build_route(G, order, targets):
     route = []
 
-    current = targets[highways[order[0]]][0]
+    start_list = targets[order[0]]
+    if not start_list:
+        return []
 
-    for idx in order[1:]:
-        hwy = highways[idx]
+    current = start_list[0]
+
+    for hwy in order[1:]:
+        candidates = targets[hwy]
+        if not candidates:
+            continue
 
         best = None
         best_cost = float("inf")
 
-        for t in targets[hwy]:
+        for t in candidates:
             try:
-                c = nx.shortest_path_length(G, current, t, weight="weight")
-                if c < best_cost:
-                    best_cost = c
+                d = nx.shortest_path_length(G, current, t, weight="weight")
+                if d < best_cost:
+                    best_cost = d
                     best = t
             except:
                 continue
+
+        if best is None:
+            continue
 
         try:
             segment = list(nx.shortest_path(G, current, best, weight="weight"))
@@ -255,31 +206,32 @@ def build_route(G, order, targets, highways):
 # SAVE
 # ----------------------------
 def save(route, filename):
+    if not route:
+        print("❌ No route generated")
+        return
+
     with open(filename, "w") as f:
         for x, y in route:
             f.write(f"{y} {x}\n")
 
 
 # ----------------------------
-# FULL SOLVER
+# MAIN SOLVER
 # ----------------------------
 def solve(folder):
     roads = load_highways(folder)
 
-    G_full = build_graph(roads)
+    G = build_graph(roads)
 
-    targets = build_targets(G_full)
+    targets = build_targets(G)
 
-    # 🔥 KEY FIX
-    G = compress_graph(G_full, targets)
+    node_to_comp = build_components(G)
 
-    highways, matrix = build_distance_matrix(G, targets)
-
-    print("Solving TSP...")
-    order = solve_tsp(matrix)
+    print("Computing order...")
+    order = compute_order(G, targets, node_to_comp)
 
     print("Building route...")
-    route = build_route(G, order, targets, highways)
+    route = build_route(G, order, targets)
 
     return route, G
 
