@@ -1,5 +1,6 @@
 import os
 import re
+import argparse
 from shapely.geometry import LineString
 
 # regex to extract lat/lon from URLs
