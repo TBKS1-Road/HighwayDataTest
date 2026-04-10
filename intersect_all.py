@@ -316,6 +316,17 @@ def format_tm_route_name(raw_name):
 
     # fallback
     return raw_name.upper()
+
+def detect_region(roads):
+    """
+    Detect region from first highway name
+    Example: la.us190 -> LA
+    """
+    for name, _, _ in roads:
+        if "." in name:
+            region = name.split(".")[0]
+            return region.upper()
+    return "XX"
 # ----------------------------
 # SAVE TM LIST
 # ----------------------------
@@ -371,7 +382,8 @@ def solve(folder):
     print("Building route...")
     route = build_route(G, order, targets)
 
-    return route, G
+    region = detect_region(roads)
+    return route, G, region
 
 
 if __name__ == "__main__":
@@ -381,10 +393,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    route, G = solve(args.folder)
+    route, G, region = solve(args.folder)
 
     save(route, args.output)
     plot_route(route)
 
     segments = build_tm_segments(route, G)
-    save_tm_list(segments, "route.list", region="LA")
+    save_tm_list(segments, "route.list", region=region)
