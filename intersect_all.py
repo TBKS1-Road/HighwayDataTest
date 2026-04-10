@@ -1,9 +1,9 @@
 import os
 import re
-import argparse
 import math
+import argparse
 import networkx as nx
-from shapely.geometry import LineString
+from collections import defaultdict
 
 # ----------------------------
 # PARSING
@@ -13,10 +13,18 @@ LON_RE = re.compile(r"lon=([-0-9.]+)")
 
 
 # ----------------------------
+# CLEAN HIGHWAY NAME
+# ----------------------------
+def normalize_name(name):
+    # extract only main identifier (AR143, I-40, US165, etc.)
+    return name.split()[0].strip()
+
+
+# ----------------------------
 # LOAD WPT FILES
 # ----------------------------
 def load_highways(folder):
-    highways = {}
+    roads = []
 
     for root, _, files in os.walk(folder):
         for file in files:
@@ -24,177 +32,170 @@ def load_highways(folder):
                 continue
 
             path = os.path.join(root, file)
-            coords = []
 
-            try:
-                with open(path, encoding="utf-8") as f:
-                    for line in f:
-                        if "lat=" not in line or "lon=" not in line:
-                            continue
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    if "lat=" not in line or "lon=" not in line:
+                        continue
 
-                        lm = LAT_RE.search(line)
-                        nm = LON_RE.search(line)
+                    lm = LAT_RE.search(line)
+                    nm = LON_RE.search(line)
 
-                        if not lm or not nm:
-                            continue
+                    if not lm or not nm:
+                        continue
 
-                        lat = float(lm.group(1))
-                        lon = float(nm.group(1))
+                    lat = float(lm.group(1))
+                    lon = float(nm.group(1))
 
-                        coords.append((lon, lat))
+                    parts = line.split()
+                    name = normalize_name(parts[0])
 
-            except Exception:
-                continue
+                    roads.append((name, (lon, lat)))
 
-            if len(coords) >= 2:
-                highways[file] = coords
-
-    print(f"Loaded {len(highways)} highways")
-    return highways
+    return roads
 
 
 # ----------------------------
-# BUILD ROAD GRAPH
+# BUILD GRAPH WITH LABELS
 # ----------------------------
-def build_graph(highways):
+def build_graph(roads):
     G = nx.Graph()
 
-    for name, coords in highways.items():
-        for i in range(len(coords) - 1):
-            a = coords[i]
-            b = coords[i + 1]
+    prev_by_file = {}
 
-            dist = math.hypot(a[0] - b[0], a[1] - b[1])
+    for name, coord in roads:
+        if name not in prev_by_file:
+            prev_by_file[name] = coord
+            continue
 
-            G.add_edge(
-                a, b,
-                weight=dist,
-                highway=name
-            )
+        prev = prev_by_file[name]
+        curr = coord
+
+        dist = math.hypot(curr[0]-prev[0], curr[1]-prev[1])
+
+        G.add_edge(prev, curr, weight=dist, highway=name)
+
+        prev_by_file[name] = curr
 
     print(f"Graph nodes: {len(G.nodes)}")
     print(f"Graph edges: {len(G.edges)}")
+
     return G
 
 
 # ----------------------------
-# SNAP POINT TO GRAPH
+# MAP HIGHWAY → NODES
 # ----------------------------
-def nearest_node(G, point):
-    return min(
-        G.nodes,
-        key=lambda n: (n[0] - point[0])**2 + (n[1] - point[1])**2
-    )
+def build_highway_targets(G):
+    targets = defaultdict(list)
 
+    for u, v, data in G.edges(data=True):
+        targets[data["highway"]].append(u)
+        targets[data["highway"]].append(v)
 
-# ----------------------------
-# PICK REPRESENTATIVE TARGETS
-# (one per highway)
-# ----------------------------
-def build_targets(highways, G):
-    targets = []
-
-    for coords in highways.values():
-        mid = coords[len(coords) // 2]
-        node = nearest_node(G, mid)
-        targets.append(node)
+    # reduce duplicates
+    for k in targets:
+        targets[k] = list(set(targets[k]))
 
     return targets
 
 
 # ----------------------------
-# BUILD ROUTE (REAL ROAD FOLLOWING)
+# SHORTEST PATH COST
 # ----------------------------
-def build_route(G, targets):
+def path_cost(G, a, b):
+    try:
+        return nx.shortest_path_length(G, a, b, weight="weight")
+    except:
+        return float("inf")
+
+
+# ----------------------------
+# GREEDY COVERAGE ORDER (CORE)
+# ----------------------------
+def compute_visit_order(G, targets):
+    remaining = set(targets.keys())
+
+    current_hwy = next(iter(remaining))
+    remaining.remove(current_hwy)
+
+    order = [current_hwy]
+
+    while remaining:
+        best = None
+        best_cost = float("inf")
+
+        for hwy in remaining:
+            for a in targets[current_hwy]:
+                for b in targets[hwy]:
+                    c = path_cost(G, a, b)
+                    if c < best_cost:
+                        best_cost = c
+                        best = hwy
+
+        order.append(best)
+        remaining.remove(best)
+        current_hwy = best
+
+    return order
+
+
+# ----------------------------
+# BUILD FINAL ROUTE
+# ----------------------------
+def build_route(G, order, targets):
     route = []
 
-    current = targets[0]
+    current = targets[order[0]][0]
 
-    for nxt in targets[1:]:
-        try:
-            path = nx.shortest_path(G, current, nxt, weight="weight")
-        except nx.NetworkXNoPath:
-            continue
+    for hwy in order[1:]:
+        best_target = None
+        best_cost = float("inf")
 
-        route.extend(path[:-1])
-        current = nxt
+        for t in targets[hwy]:
+            c = path_cost(G, current, t)
+            if c < best_cost:
+                best_cost = c
+                best_target = t
+
+        segment = nx.shortest_path(G, current, best_target, weight="weight")
+
+        route.extend(segment[:-1])
+        current = best_target
 
     route.append(current)
     return route
 
 
 # ----------------------------
-# COVERAGE CHECK (OPTIONAL)
+# SAVE
 # ----------------------------
-def check_coverage(route, highways, G):
-    route_set = set(route)
-    missed = []
-
-    for name, coords in highways.items():
-        ok = False
-        for c in coords:
-            node = nearest_node(G, c)
-            if node in route_set:
-                ok = True
-                break
-        if not ok:
-            missed.append(name)
-
-    return missed
-
-
-# ----------------------------
-# SAVE OUTPUT
-# ----------------------------
-def save_path(route, filename="path.txt"):
+def save(route, filename):
     with open(filename, "w") as f:
         for x, y in route:
             f.write(f"{y} {x}\n")
 
 
 # ----------------------------
-# FOLIUM VISUALIZATION
-# ----------------------------
-def plot_folium(route, highways, output="map.html"):
-    import folium
-
-    first_lon, first_lat = route[0]
-    m = folium.Map(location=[first_lat, first_lon], zoom_start=7)
-
-    # highways
-    for coords in highways.values():
-        folium.PolyLine(
-            [(lat, lon) for lon, lat in coords],
-            color="blue",
-            weight=1
-        ).add_to(m)
-
-    # route
-    folium.PolyLine(
-        [(lat, lon) for lon, lat in route],
-        color="red",
-        weight=3
-    ).add_to(m)
-
-    m.save(output)
-    print(f"Saved map: {output}")
-
-
-# ----------------------------
-# MAIN SOLVER
+# SOLVER
 # ----------------------------
 def solve(folder):
-    highways = load_highways(folder)
+    print("Loading roads...")
+    roads = load_highways(folder)
 
-    G = build_graph(highways)
+    print("Building graph...")
+    G = build_graph(roads)
 
-    print("Building targets...")
-    targets = build_targets(highways, G)
+    print("Building highway targets...")
+    targets = build_highway_targets(G)
 
-    print("Routing over real road network...")
-    route = build_route(G, targets)
+    print("Computing visit order...")
+    order = compute_visit_order(G, targets)
 
-    return route, highways
+    print("Building final route...")
+    route = build_route(G, order, targets)
+
+    return route, G
 
 
 # ----------------------------
@@ -204,14 +205,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("folder")
     parser.add_argument("--output", default="path.txt")
-    parser.add_argument("--map", action="store_true")
 
     args = parser.parse_args()
 
-    route, highways = solve(args.folder)
+    route, G = solve(args.folder)
 
-    save_path(route, args.output)
+    save(route, args.output)
     print(f"Saved {args.output}")
-
-    if args.map:
-        plot_folium(route, highways)
