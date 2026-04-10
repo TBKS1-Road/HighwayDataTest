@@ -210,8 +210,8 @@ def build_route(G, order, targets, highways):
 
         segment = list(nx.shortest_path(G, current, best, weight="weight"))
 
-            if len(segment) > 1:
-                route.extend(segment[:-1])
+        if len(segment) > 1:
+            route.extend(segment[:-1])
                 
         current = best
 
