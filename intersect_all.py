@@ -5,19 +5,15 @@ import argparse
 import networkx as nx
 from collections import defaultdict
 
+from ortools.constraint_solver import pywrapcp
+from ortools.constraint_solver import routing_enums_pb2
+
+
 # ----------------------------
 # PARSING
 # ----------------------------
 LAT_RE = re.compile(r"lat=([-0-9.]+)")
 LON_RE = re.compile(r"lon=([-0-9.]+)")
-
-
-# ----------------------------
-# CLEAN HIGHWAY NAME
-# ----------------------------
-def normalize_name(name):
-    # extract only main identifier (AR143, I-40, US165, etc.)
-    return name.split()[0].strip()
 
 
 # ----------------------------
@@ -47,35 +43,30 @@ def load_highways(folder):
                     lat = float(lm.group(1))
                     lon = float(nm.group(1))
 
-                    parts = line.split()
-                    name = normalize_name(parts[0])
-
+                    name = file.replace(".wpt", "")
                     roads.append((name, (lon, lat)))
 
     return roads
 
 
 # ----------------------------
-# BUILD GRAPH WITH LABELS
+# BUILD GRAPH
 # ----------------------------
 def build_graph(roads):
     G = nx.Graph()
 
-    prev_by_file = {}
+    last = {}
 
     for name, coord in roads:
-        if name not in prev_by_file:
-            prev_by_file[name] = coord
-            continue
+        if name in last:
+            a = last[name]
+            b = coord
 
-        prev = prev_by_file[name]
-        curr = coord
+            dist = math.hypot(a[0]-b[0], a[1]-b[1])
 
-        dist = math.hypot(curr[0]-prev[0], curr[1]-prev[1])
+            G.add_edge(a, b, weight=dist, highway=name)
 
-        G.add_edge(prev, curr, weight=dist, highway=name)
-
-        prev_by_file[name] = curr
+        last[name] = coord
 
     print(f"Graph nodes: {len(G.nodes)}")
     print(f"Graph edges: {len(G.edges)}")
@@ -84,16 +75,15 @@ def build_graph(roads):
 
 
 # ----------------------------
-# MAP HIGHWAY → NODES
+# HIGHWAY TARGETS (ONE PER HIGHWAY)
 # ----------------------------
-def build_highway_targets(G):
+def build_targets(G):
     targets = defaultdict(list)
 
-    for u, v, data in G.edges(data=True):
-        targets[data["highway"]].append(u)
-        targets[data["highway"]].append(v)
+    for u, v, d in G.edges(data=True):
+        targets[d["highway"]].append(u)
+        targets[d["highway"]].append(v)
 
-    # reduce duplicates
     for k in targets:
         targets[k] = list(set(targets[k]))
 
@@ -101,41 +91,78 @@ def build_highway_targets(G):
 
 
 # ----------------------------
-# SHORTEST PATH COST
+# DISTANCE MATRIX (CRITICAL STEP)
 # ----------------------------
-def path_cost(G, a, b):
-    try:
-        return nx.shortest_path_length(G, a, b, weight="weight")
-    except:
-        return float("inf")
+def build_distance_matrix(G, targets):
+    print("Precomputing shortest path distances...")
+
+    highways = list(targets.keys())
+    n = len(highways)
+
+    dist_matrix = [[0]*n for _ in range(n)]
+
+    def shortest(a, b):
+        try:
+            return nx.shortest_path_length(G, a, b, weight="weight")
+        except:
+            return float("inf")
+
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+
+            h1 = highways[i]
+            h2 = highways[j]
+
+            best = float("inf")
+
+            for a in targets[h1]:
+                for b in targets[h2]:
+                    best = min(best, shortest(a, b))
+
+            dist_matrix[i][j] = int(best)
+
+        print(f"Row {i+1}/{n}")
+
+    return highways, dist_matrix
 
 
 # ----------------------------
-# GREEDY COVERAGE ORDER (CORE)
+# OR-TOOLS TSP SOLVER (GLOBAL OPTIMIZATION)
 # ----------------------------
-def compute_visit_order(G, targets):
-    remaining = set(targets.keys())
+def solve_tsp(distance_matrix):
+    n = len(distance_matrix)
 
-    current_hwy = next(iter(remaining))
-    remaining.remove(current_hwy)
+    manager = pywrapcp.RoutingIndexManager(n, 1, 0)
+    routing = pywrapcp.RoutingModel(manager)
 
-    order = [current_hwy]
+    def distance_callback(from_index, to_index):
+        from_node = manager.IndexToNode(from_index)
+        to_node = manager.IndexToNode(to_index)
+        return distance_matrix[from_node][to_node]
 
-    while remaining:
-        best = None
-        best_cost = float("inf")
+    transit = routing.RegisterTransitCallback(distance_callback)
+    routing.SetArcCostEvaluatorOfAllVehicles(transit)
 
-        for hwy in remaining:
-            for a in targets[current_hwy]:
-                for b in targets[hwy]:
-                    c = path_cost(G, a, b)
-                    if c < best_cost:
-                        best_cost = c
-                        best = hwy
+    params = pywrapcp.DefaultRoutingSearchParameters()
+    params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+    params.time_limit.FromSeconds(30)
 
-        order.append(best)
-        remaining.remove(best)
-        current_hwy = best
+    solution = routing.SolveWithParameters(params)
+
+    if not solution:
+        raise Exception("No solution found")
+
+    index = routing.Start(0)
+
+    order = []
+
+    while not routing.IsEnd(index):
+        node = manager.IndexToNode(index)
+        order.append(node)
+        index = solution.Value(routing.NextVar(index))
 
     return order
 
@@ -143,25 +170,28 @@ def compute_visit_order(G, targets):
 # ----------------------------
 # BUILD FINAL ROUTE
 # ----------------------------
-def build_route(G, order, targets):
+def build_route(G, highway_order, highways, targets):
     route = []
 
-    current = targets[order[0]][0]
+    current = targets[highway_order[0]][0]
 
-    for hwy in order[1:]:
-        best_target = None
+    for hwy in highway_order[1:]:
+        best = None
         best_cost = float("inf")
 
         for t in targets[hwy]:
-            c = path_cost(G, current, t)
-            if c < best_cost:
-                best_cost = c
-                best_target = t
+            try:
+                cost = nx.shortest_path_length(G, current, t, weight="weight")
+                if cost < best_cost:
+                    best_cost = cost
+                    best = t
+            except:
+                continue
 
-        segment = nx.shortest_path(G, current, best_target, weight="weight")
+        segment = nx.shortest_path(G, current, best, weight="weight")
 
         route.extend(segment[:-1])
-        current = best_target
+        current = best
 
     route.append(current)
     return route
@@ -177,23 +207,24 @@ def save(route, filename):
 
 
 # ----------------------------
-# SOLVER
+# SOLVE PIPELINE
 # ----------------------------
 def solve(folder):
-    print("Loading roads...")
     roads = load_highways(folder)
 
-    print("Building graph...")
     G = build_graph(roads)
 
-    print("Building highway targets...")
-    targets = build_highway_targets(G)
+    targets = build_targets(G)
 
-    print("Computing visit order...")
-    order = compute_visit_order(G, targets)
+    highways, dist_matrix = build_distance_matrix(G, targets)
+
+    print("Solving global TSP (OR-Tools)...")
+    order = solve_tsp(dist_matrix)
+
+    ordered_highways = [highways[i] for i in order]
 
     print("Building final route...")
-    route = build_route(G, order, targets)
+    route = build_route(G, ordered_highways, targets)
 
     return route, G
 
@@ -211,4 +242,5 @@ if __name__ == "__main__":
     route, G = solve(args.folder)
 
     save(route, args.output)
+
     print(f"Saved {args.output}")
