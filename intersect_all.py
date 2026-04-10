@@ -133,8 +133,8 @@ def compute_order(G, targets, node_to_comp):
 
     with tqdm(total=len(remaining), desc="Computing route order") as pbar:
         while remaining:
-        best = None
-        best_cost = float("inf")
+            best = None
+            best_cost = float("inf")
 
         for hwy in remaining:
             for a in targets[current]:
