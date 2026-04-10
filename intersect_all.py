@@ -4,6 +4,7 @@ import math
 import argparse
 import networkx as nx
 from collections import defaultdict
+from tqdm import tqdm
 import folium   # ✅ NEW
 
 
@@ -21,7 +22,7 @@ def load_highways(folder):
     roads = []
 
     for root, _, files in os.walk(folder):
-        for file in files:
+        for file in tqdm(files, desc="Loading WPT files"):
             if not file.lower().endswith(".wpt"):
                 continue
 
@@ -55,7 +56,7 @@ def build_graph(roads):
     G = nx.Graph()
     last = {}
 
-    for name, coord in roads:
+    for name, coord in tqdm(roads, desc="Building graph"):
         if name in last:
             a = last[name]
             b = coord
@@ -130,7 +131,8 @@ def compute_order(G, targets, node_to_comp):
     current = remaining.pop()
     order = [current]
 
-    while remaining:
+    with tqdm(total=len(remaining), desc="Computing route order") as pbar:
+        while remaining:
         best = None
         best_cost = float("inf")
 
@@ -150,6 +152,8 @@ def compute_order(G, targets, node_to_comp):
         order.append(best)
         current = best
 
+        pbar.update(1)
+
     return order
 
 
@@ -165,7 +169,7 @@ def build_route(G, order, targets):
 
     current = start_list[0]
 
-    for hwy in order[1:]:
+    for hwy in tqdm(order[1:], desc="Building route"):
         candidates = targets[hwy]
         if not candidates:
             continue
