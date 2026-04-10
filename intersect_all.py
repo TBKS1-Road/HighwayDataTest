@@ -11,7 +11,7 @@ import folium
 # ----------------------------
 # SETTINGS (tweak for speed)
 # ----------------------------
-TARGETS_PER_HIGHWAY = 2   # 🔥 set to 1 for maximum speed
+TARGETS_PER_HIGHWAY = 1  
 
 
 # ----------------------------
@@ -93,7 +93,10 @@ def build_targets(G):
 
     for hwy, nodes in raw.items():
         nodes = list(set(nodes))
-        targets[hwy] = nodes[:TARGETS_PER_HIGHWAY]
+
+        best_node = max(nodes, key=lambda n: G.degree(n))
+
+        targets[hwy] = [best_node]
 
     print(f"Highway groups: {len(targets)}")
     return targets
