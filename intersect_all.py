@@ -76,7 +76,7 @@ def build_graph(roads):
 
 
 # ----------------------------
-# BUILD TARGETS (FIXED + REDUCED)
+# BUILD TARGET NODES (HIGHWAY REPRESENTATIVES)
 # ----------------------------
 def build_targets(G):
     raw = defaultdict(list)
@@ -91,7 +91,7 @@ def build_targets(G):
     for hwy, nodes in raw.items():
         nodes = list(set(nodes))
 
-        # 🔥 CRITICAL REDUCTION (prevents explosion)
+        # keep only a few representative nodes per highway
         if len(nodes) > 3:
             nodes = nodes[:3]
 
@@ -102,7 +102,35 @@ def build_targets(G):
 
 
 # ----------------------------
-# DISTANCE MATRIX (FIXED + CACHED)
+# 🔥 GRAPH COMPRESSION (CRITICAL FIX)
+# ----------------------------
+def compress_graph(G, targets):
+    important = set()
+
+    # keep all highway nodes
+    for nodes in targets.values():
+        for n in nodes:
+            important.add(n)
+
+    # expand by 1-hop neighbors to preserve connectivity
+    expanded = set(important)
+
+    for n in list(important):
+        for nbr in G.neighbors(n):
+            expanded.add(nbr)
+
+    H = G.subgraph(expanded).copy()
+
+    print("\n========================")
+    print(f"Compressed graph nodes: {len(H.nodes)}")
+    print(f"Compressed graph edges: {len(H.edges)}")
+    print("========================\n")
+
+    return H
+
+
+# ----------------------------
+# DISTANCE MATRIX (FAST + SAFE)
 # ----------------------------
 def build_distance_matrix(G, targets):
     highways = list(targets.keys())
@@ -123,7 +151,6 @@ def build_distance_matrix(G, targets):
 
         cache[(a, b)] = val
         cache[(b, a)] = val
-
         return val
 
     matrix = [[0] * n for _ in range(n)]
@@ -142,9 +169,11 @@ def build_distance_matrix(G, targets):
                 for b in targets[h2]:
                     best = min(best, shortest(a, b))
 
+            # prevent OR-Tools crash
             if best == float("inf"):
-                best = 10**9  # large penalty instead of infinity
-                print(f"⚠ disconnected: {h1} -> {h2}")
+                best = 10**9
+
+            matrix[i][j] = int(best)
 
         print(f"Row {i+1}/{n}")
 
@@ -152,7 +181,7 @@ def build_distance_matrix(G, targets):
 
 
 # ----------------------------
-# OR-TOOLS TSP SOLVER
+# OR-TOOLS TSP
 # ----------------------------
 def solve_tsp(matrix):
     n = len(matrix)
@@ -171,7 +200,7 @@ def solve_tsp(matrix):
     params = pywrapcp.DefaultRoutingSearchParameters()
     params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
     params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-    params.time_limit.FromSeconds(20)
+    params.time_limit.FromSeconds(15)
 
     sol = routing.SolveWithParameters(params)
 
@@ -186,7 +215,7 @@ def solve_tsp(matrix):
 
 
 # ----------------------------
-# BUILD FINAL ROUTE
+# BUILD FINAL ROUTE (FAST)
 # ----------------------------
 def build_route(G, order, targets, highways):
     route = []
@@ -208,11 +237,14 @@ def build_route(G, order, targets, highways):
             except:
                 continue
 
-        segment = list(nx.shortest_path(G, current, best, weight="weight"))
+        try:
+            segment = list(nx.shortest_path(G, current, best, weight="weight"))
+        except:
+            continue
 
         if len(segment) > 1:
             route.extend(segment[:-1])
-                
+
         current = best
 
     route.append(current)
@@ -229,14 +261,17 @@ def save(route, filename):
 
 
 # ----------------------------
-# MAIN PIPELINE
+# FULL SOLVER
 # ----------------------------
 def solve(folder):
     roads = load_highways(folder)
 
-    G = build_graph(roads)
+    G_full = build_graph(roads)
 
-    targets = build_targets(G)
+    targets = build_targets(G_full)
+
+    # 🔥 KEY FIX
+    G = compress_graph(G_full, targets)
 
     highways, matrix = build_distance_matrix(G, targets)
 
