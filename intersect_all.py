@@ -1,6 +1,7 @@
 import os
 import re
 import argparse
+import folium
 from shapely.geometry import LineString
 
 # ----------------------------
@@ -215,3 +216,21 @@ if __name__ == "__main__":
 
     if args.plot:
         plot_result(path, highways)
+
+def plot_folium(path, highways, output_html="map.html"):
+    # center map on first point
+    first_x, first_y = next(iter(path.coords))[0], next(iter(path.coords))[1]
+
+    m = folium.Map(location=[first_y, first_x], zoom_start=7)
+
+    # plot highways (thin blue lines)
+    for geom in highways.values():
+        coords = [(lat, lon) for lon, lat in geom.coords]
+        folium.PolyLine(coords, color="blue", weight=1).add_to(m)
+
+    # plot your path (red thick line)
+    path_coords = [(lat, lon) for lon, lat in path.coords]
+    folium.PolyLine(path_coords, color="red", weight=4).add_to(m)
+
+    m.save(output_html)
+    print(f"Saved map to {output_html}")
