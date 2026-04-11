@@ -344,9 +344,14 @@ def save_tm_list(segments, filename="route.list", region="AR"):
 
 
 # ----------------------------
-# SAVE KML
+# SAVE CLEAN ORDERED KML
 # ----------------------------
-def save_kml(route, filename="route.kml"):
+def save_clean_kml(route, filename="route_clean.kml", step=50):
+    """
+    step = how many points to skip between markers
+    (larger = cleaner, smaller = more detailed)
+    """
+
     if not route:
         return
 
@@ -357,12 +362,23 @@ def save_kml(route, filename="route.kml"):
         f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
         f.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n')
         f.write('<Document>\n')
-        f.write('<name>Route</name>\n')
+        f.write('<name>Clean Route</name>\n')
 
-        # LineString (main path)
+        # ---- MAIN PATH (thin line) ----
+        f.write('''
+<Style id="mainLine">
+  <LineStyle>
+    <color>ff0000ff</color>
+    <width>2</width>
+  </LineStyle>
+</Style>
+''')
+
         f.write('<Placemark>\n')
-        f.write('<name>Route Path</name>\n')
+        f.write('<name>Full Route</name>\n')
+        f.write('<styleUrl>#mainLine</styleUrl>\n')
         f.write('<LineString>\n')
+        f.write('<tessellate>1</tessellate>\n')
         f.write('<coordinates>\n')
 
         for lon, lat in route:
@@ -372,28 +388,27 @@ def save_kml(route, filename="route.kml"):
         f.write('</LineString>\n')
         f.write('</Placemark>\n')
 
-        # Start point
-        start_lon, start_lat = route[0]
-        f.write('<Placemark>\n')
-        f.write('<name>Start</name>\n')
-        f.write('<Point>\n')
-        f.write(f'<coordinates>{start_lon},{start_lat},0</coordinates>\n')
-        f.write('</Point>\n')
-        f.write('</Placemark>\n')
+        # ---- ORDER MARKERS (KEY PART) ----
+        for i in range(0, len(route), step):
+            lon, lat = route[i]
 
-        # End point
-        end_lon, end_lat = route[-1]
-        f.write('<Placemark>\n')
-        f.write('<name>End</name>\n')
-        f.write('<Point>\n')
-        f.write(f'<coordinates>{end_lon},{end_lat},0</coordinates>\n')
-        f.write('</Point>\n')
-        f.write('</Placemark>\n')
+            f.write('<Placemark>\n')
+            f.write(f'<name>{i}</name>\n')
+            f.write('<Point>\n')
+            f.write(f'<coordinates>{lon},{lat},0</coordinates>\n')
+            f.write('</Point>\n')
+            f.write('</Placemark>\n')
+
+        # Start / End
+        f.write(f'''
+<Placemark><name>START</name><Point><coordinates>{route[0][0]},{route[0][1]},0</coordinates></Point></Placemark>
+<Placemark><name>END</name><Point><coordinates>{route[-1][0]},{route[-1][1]},0</coordinates></Point></Placemark>
+''')
 
         f.write('</Document>\n')
         f.write('</kml>\n')
 
-    print(f"KML saved: {filename}")
+    print(f"Clean KML saved: {filename}")
 
 
 # ----------------------------
@@ -447,7 +462,7 @@ if __name__ == "__main__":
     save(route, args.output)
     plot_route(route)
 
-    save_kml(route, "route.kml")
+    save_clean_kml(route, "route_clean.kml", step=40)
 
     segments = build_tm_segments(route, G)
     save_tm_list(segments, "route.list", region=region)
