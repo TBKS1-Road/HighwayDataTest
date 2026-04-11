@@ -344,6 +344,59 @@ def save_tm_list(segments, filename="route.list", region="AR"):
 
 
 # ----------------------------
+# SAVE KML
+# ----------------------------
+def save_kml(route, filename="route.kml"):
+    if not route:
+        return
+
+    if not filename.endswith(".kml"):
+        filename += ".kml"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write('<kml xmlns="http://www.opengis.net/kml/2.2">\n')
+        f.write('<Document>\n')
+        f.write('<name>Route</name>\n')
+
+        # LineString (main path)
+        f.write('<Placemark>\n')
+        f.write('<name>Route Path</name>\n')
+        f.write('<LineString>\n')
+        f.write('<coordinates>\n')
+
+        for lon, lat in route:
+            f.write(f"{lon},{lat},0\n")
+
+        f.write('</coordinates>\n')
+        f.write('</LineString>\n')
+        f.write('</Placemark>\n')
+
+        # Start point
+        start_lon, start_lat = route[0]
+        f.write('<Placemark>\n')
+        f.write('<name>Start</name>\n')
+        f.write('<Point>\n')
+        f.write(f'<coordinates>{start_lon},{start_lat},0</coordinates>\n')
+        f.write('</Point>\n')
+        f.write('</Placemark>\n')
+
+        # End point
+        end_lon, end_lat = route[-1]
+        f.write('<Placemark>\n')
+        f.write('<name>End</name>\n')
+        f.write('<Point>\n')
+        f.write(f'<coordinates>{end_lon},{end_lat},0</coordinates>\n')
+        f.write('</Point>\n')
+        f.write('</Placemark>\n')
+
+        f.write('</Document>\n')
+        f.write('</kml>\n')
+
+    print(f"KML saved: {filename}")
+
+
+# ----------------------------
 # MAP OUTPUT
 # ----------------------------
 def plot_route(route, output_html="route_map.html"):
@@ -393,6 +446,8 @@ if __name__ == "__main__":
 
     save(route, args.output)
     plot_route(route)
+
+    save_kml(route, "route.kml")
 
     segments = build_tm_segments(route, G)
     save_tm_list(segments, "route.list", region=region)
