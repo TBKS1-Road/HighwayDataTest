@@ -227,42 +227,87 @@ def save(route, filename):
 # ----------------------------
 # BUILD TM SEGMENTS
 # ----------------------------
+def is_valid_label(label):
+    return label and not label.startswith("+")
+
+
+def normalize_label(label):
+    # Remove directional suffixes like _N, _S
+    return re.sub(r'_(N|S|E|W)$', '', label)
+
+
+def is_tm_visible(node, G):
+    """
+    A node is 'TM-visible' if:
+    - It connects to 2+ DIFFERENT highways (intersection)
+    - OR it is a dead-end (degree 1)
+    """
+    neighbors = list(G.neighbors(node))
+
+    if len(neighbors) <= 1:
+        return True  # endpoint
+
+    hwys = set()
+    for n in neighbors:
+        edge = G.get_edge_data(node, n)
+        if edge and "highway" in edge:
+            hwys.add(edge["highway"])
+
+    return len(hwys) > 1  # intersection
+
+
 def build_tm_segments(route, G):
     segments = []
 
     if not route:
         return segments
 
-    prev_hwy = None
+    current_hwy = None
     start_label = None
-    prev_label = None
+    last_visible_label = None
 
     for node in route:
         data = G.nodes.get(node, {})
         hwy = data.get("highway")
         label = data.get("label")
 
-        if not hwy or not label:
+        if not is_valid_label(label):
             continue
 
-        if prev_hwy is None:
-            prev_hwy = hwy
-            start_label = label
-            prev_label = label
+        label = normalize_label(label)
+
+        visible = is_tm_visible(node, G)
+
+        if current_hwy is None:
+            current_hwy = hwy
+            if visible:
+                start_label = label
+                last_visible_label = label
             continue
 
-        if hwy != prev_hwy:
-            segments.append((prev_hwy, start_label, prev_label))
-            prev_hwy = hwy
+        # If still on same highway
+        if hwy == current_hwy:
+            if visible:
+                last_visible_label = label
+            continue
+
+        # Highway changed → finalize segment
+        if start_label and last_visible_label and start_label != last_visible_label:
+            segments.append((current_hwy, start_label, last_visible_label))
+
+        # Start new highway segment
+        current_hwy = hwy
+
+        if visible:
             start_label = label
+            last_visible_label = label
+        else:
+            start_label = None
+            last_visible_label = None
 
-        prev_label = label
-
-    if prev_hwy and start_label and prev_label:
-        segments.append((prev_hwy, start_label, prev_label))
-
-    # remove duplicates
-    segments = list(dict.fromkeys(segments))
+    # Final segment
+    if start_label and last_visible_label and start_label != last_visible_label:
+        segments.append((current_hwy, start_label, last_visible_label))
 
     return segments
 
