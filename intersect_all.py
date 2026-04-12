@@ -65,13 +65,22 @@ def build_graph(roads):
     last = {}
 
     for name, coord, label in tqdm(roads, desc="Building graph"):
-        G.add_node(coord, label=label, highway=name)
+        # Create node if not exists
+        if coord not in G:
+            G.add_node(coord, labels=set(), highways=set())
 
+        # Store ALL labels & highways
+        if label:
+            G.nodes[coord]["labels"].add(label)
+        G.nodes[coord]["highways"].add(name)
+
+        # Connect edges per highway
         if name in last:
             a = last[name]
             b = coord
 
             dist = math.hypot(a[0] - b[0], a[1] - b[1])
+
             G.add_edge(a, b, weight=dist, highway=name)
 
         last[name] = coord
@@ -80,7 +89,6 @@ def build_graph(roads):
     print(f"Graph edges: {len(G.edges)}")
 
     return G
-
 
 # ----------------------------
 # BUILD TARGETS (SMART PICK)
@@ -237,23 +245,22 @@ def normalize_label(label):
 
 
 def is_tm_visible(node, G):
-    """
-    A node is 'TM-visible' if:
-    - It connects to 2+ DIFFERENT highways (intersection)
-    - OR it is a dead-end (degree 1)
-    """
-    neighbors = list(G.neighbors(node))
+    data = G.nodes[node]
+    highways = data.get("highways", set())
 
-    if len(neighbors) <= 1:
-        return True  # endpoint
+    # Dead end
+    if G.degree(node) <= 1:
+        return True
 
-    hwys = set()
-    for n in neighbors:
-        edge = G.get_edge_data(node, n)
-        if edge and "highway" in edge:
-            hwys.add(edge["highway"])
+    # Intersection
+    if len(highways) > 1:
+        return True
 
-    return len(hwys) > 1  # intersection
+    # Optional: keep major bends (high connectivity)
+    if G.degree(node) >= 3:
+        return True
+
+    return False
 
 
 def build_tm_segments(route, G):
@@ -269,7 +276,10 @@ def build_tm_segments(route, G):
     for node in route:
         data = G.nodes.get(node, {})
         hwy = data.get("highway")
-        label = data.get("label")
+        labels = data.get("labels", set())
+
+        # Pick best label (prefer non-hidden)
+        label = next((l for l in labels if not l.startswith("+")), None)
 
         if not is_valid_label(label):
             continue
